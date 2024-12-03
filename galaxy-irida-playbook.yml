@@ -1,0 +1,71 @@
+---
+- name: Create a new instance to host the main galaxy package
+  hosts: localhost
+  tasks:
+   - openstack.cloud.keypair:
+      state: present
+      name: sam_dummy_galaxy_key
+      public_key_file: /home/ubuntu/.ssh/dummy-galaxy.pub
+   - openstack.cloud.server:
+      state: present
+      name: sam-dummy-galaxy
+      image: AlmaLinux-9.4-20240805
+      timeout: 200
+      flavor: qib.8cpus.32G
+      network: default_private_network
+      security_groups:
+      - dummy-galaxy
+      key_name: sam_dummy_galaxy_key
+      boot_from_volume: true
+      volume_size: 120
+     register: create_galaxy_vm
+   - ansible.builtin.add_host:
+      name: galaxy-server
+      ansible_host: "{{ galaxy_vm_ip }}"
+      groups:
+       - galaxyservers
+       - dbservers
+     vars:
+      extract_IP_addr_regex: "server.addresses.default_private_network[?starts_with(addr,'192')].addr"
+      galaxy_vm_ip: "{{ create_galaxy_vm | community.general.json_query(extract_IP_addr_regex) | min }}"
+
+- hosts: dbservers
+  remote_user: almalinux
+  become: true
+  pre_tasks:
+    - name: Install Dependencies
+      package:
+        name: 'acl'
+  roles:
+    - galaxyproject.postgresql
+    - role: galaxyproject.postgresql_objects
+      become: true
+      become_user: postgres
+
+- name: Install galaxy on the main server
+  hosts: galaxyservers
+  vars_files:
+    - group_vars/secret.yml
+  remote_user: almalinux
+  become: true
+  pre_tasks:
+   - name: Install Dependencies
+     dnf:
+      name: "{{ item }}"
+     become: yes
+     with_items:
+      - git
+      - python-pip
+      - acl
+      - bzip2
+      - make
+      - tar
+      - python3-setuptools
+   - name: Install virtualenv
+     shell: pip install virtualenv
+  roles:
+   - galaxyproject.galaxy
+   - role: galaxyproject.miniconda
+     become: true
+     become_user: "{{ galaxy_user_name }}"
+   - galaxyproject.nginx
